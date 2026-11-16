@@ -1,0 +1,80 @@
+const SHEET_NAME = 'TelepathyData';
+function doGet(e) { return handleRequest(e); }
+function doPost(e) { return handleRequest(e); }
+function handleRequest(e) {
+  const lock = LockService.getScriptLock();
+  lock.tryLock(10000);
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    let sheet = ss.getSheetByName(SHEET_NAME);
+    if (!sheet) {
+      sheet = ss.insertSheet(SHEET_NAME);
+      sheet.appendRow(['RoomID', 'Role', 'PlayerName', 'Question', 'Answer', 'IsRevealed', 'Timestamp']);
+    }
+    const params = (e.postData && e.postData.contents) ? JSON.parse(e.postData.contents) : (e.parameter || {});
+    const action = params.action;
+    const roomId = (params.roomId || '').toString().trim().toUpperCase();
+    if (action === 'createRoom') {
+      const newRoomId = Math.floor(1000 + Math.random() * 9000).toString();
+      sheet.appendRow([newRoomId, 'HOST', params.playerName || '神秘房主', '等待房主出題...', '', 'FALSE', Date.now()]);
+      return jsonRes({ status: 'success', roomId: newRoomId });
+    }
+    if (!roomId) return jsonRes({ status: 'error', message: '缺少房間代碼' });
+    const data = sheet.getDataRange().getValues();
+    if (action === 'joinRoom') {
+      let exists = false, rowIdx = -1;
+      for (let i = 1; i < data.length; i++) {
+        if (data[i][0].toString() === roomId) {
+          exists = true;
+          if (data[i][2] === params.playerName) rowIdx = i + 1;
+        }
+      }
+      if (!exists) return jsonRes({ status: 'error', message: '找不到此房間代碼' });
+      if (rowIdx === -1) sheet.appendRow([roomId, 'PLAYER', params.playerName, '', '', 'FALSE', Date.now()]);
+      return jsonRes({ status: 'success' });
+    }
+    if (action === 'submitAnswer') {
+      for (let i = 1; i < data.length; i++) {
+        if (data[i][0].toString() === roomId && data[i][2] === params.playerName) {
+          sheet.getRange(i + 1, 5).setValue(params.answer);
+          sheet.getRange(i + 1, 7).setValue(Date.now());
+          break;
+        }
+      }
+      return jsonRes({ status: 'success' });
+    }
+    if (action === 'hostAction') {
+      for (let i = 1; i < data.length; i++) {
+        if (data[i][0].toString() === roomId) {
+          if (params.subAction === 'setQuestion' && data[i][1] === 'HOST') sheet.getRange(i + 1, 4).setValue(params.question);
+          else if (params.subAction === 'reveal') sheet.getRange(i + 1, 6).setValue('TRUE');
+          else if (params.subAction === 'hide') sheet.getRange(i + 1, 6).setValue('FALSE');
+          else if (params.subAction === 'reset') {
+            if (data[i][1] === 'HOST') sheet.getRange(i + 1, 4).setValue('等待房主出題...');
+            sheet.getRange(i + 1, 5).setValue('');
+            sheet.getRange(i + 1, 6).setValue('FALSE');
+          }
+        }
+      }
+      return jsonRes({ status: 'success' });
+    }
+    if (action === 'getState') {
+      let question = '等待房主出題...', isRevealed = false, players = [];
+      for (let i = 1; i < data.length; i++) {
+        if (data[i][0].toString() === roomId) {
+          if (data[i][1] === 'HOST') { question = data[i][3]; isRevealed = (data[i][5] === 'TRUE' || data[i][5] === true); }
+          players.push({ name: data[i][2], role: data[i][1], answer: data[i][4], hasAnswered: data[i][4] !== '' && data[i][4] !== null });
+        }
+      }
+      return jsonRes({ status: 'success', roomId, question, isRevealed, players });
+    }
+    return jsonRes({ status: 'error', message: '未知操作' });
+  } catch (err) {
+    return jsonRes({ status: 'error', message: err.toString() });
+  } finally {
+    lock.releaseLock();
+  }
+}
+function jsonRes(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
+}
